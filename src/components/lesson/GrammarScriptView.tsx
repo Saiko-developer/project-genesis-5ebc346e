@@ -3,14 +3,16 @@
  * authored — no AI-generated prose. Each section offers two views:
  * "Text Explanation" (default) and "Oral Explanation".
  */
-import { useState } from "react";
-import { BookOpen, Mic } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BookOpen, Mic, Pause, Play } from "lucide-react";
 
 import { OwlBadge } from "@/components/lesson/ExerciseKit";
 import { Button } from "@/components/ui/button";
+import { sanitizeForSpeech } from "@/lib/sanitizeSpeech";
 import type { GrammarSection, UnitGrammar } from "@/data/grammar/types";
 
 type Mode = "text" | "oral";
+
 
 export function GrammarScriptView({ grammar }: { grammar: UnitGrammar }) {
   return (
