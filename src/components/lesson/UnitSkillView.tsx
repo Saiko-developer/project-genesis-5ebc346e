@@ -16,6 +16,8 @@ import {
 } from "@/components/lesson/ExerciseKit";
 import { GrammarScriptView } from "@/components/lesson/GrammarScriptView";
 import { Unit2SkillView } from "@/components/lesson/Unit2SkillView";
+import { Unit3SkillView } from "@/components/lesson/Unit3SkillView";
+
 import { UNIT1_GRAMMAR } from "@/data/grammar/unit1";
 
 import { Button } from "@/components/ui/button";
