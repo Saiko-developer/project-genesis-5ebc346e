@@ -3,14 +3,16 @@
  * authored — no AI-generated prose. Each section offers two views:
  * "Text Explanation" (default) and "Oral Explanation".
  */
-import { useState } from "react";
-import { BookOpen, Mic } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BookOpen, Mic, Pause, Play } from "lucide-react";
 
 import { OwlBadge } from "@/components/lesson/ExerciseKit";
 import { Button } from "@/components/ui/button";
+import { sanitizeForSpeech } from "@/lib/sanitizeSpeech";
 import type { GrammarSection, UnitGrammar } from "@/data/grammar/types";
 
 type Mode = "text" | "oral";
+
 
 export function GrammarScriptView({ grammar }: { grammar: UnitGrammar }) {
   return (
@@ -148,22 +150,70 @@ function TextMode({ section }: { section: GrammarSection }) {
   );
 }
 
+/**
+ * Oral mode — the long script is spoken with the browser's native
+ * SpeechSynthesis API and NOT shown on screen. Students see a short,
+ * scannable bullet summary plus a play/pause control.
+ */
 function OralMode({ section }: { section: GrammarSection }) {
   const o = section.oral;
+  const spoken = sanitizeForSpeech(o.scriptMy);
+  const { supported, speaking, paused, toggle, stop } = useNativeSpeech();
+  const startedRef = useRef(false);
+
+  // Auto-read as soon as the Oral Explanation view opens; stop on unmount or
+  // when the student switches back to Text Explanation.
+  useEffect(() => {
+    if (!supported || startedRef.current) return;
+    startedRef.current = true;
+    toggle(spoken);
+    return () => stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supported]);
+
+  useEffect(() => () => stop(), [stop]);
+
+  const bullets = summarise(section);
+
   return (
     <div className="mt-4 space-y-3">
       <OwlBadge>
         <p className="font-semibold">ဆရာ ဇီးကွက်ရဲ့ ပါးစပ်ရှင်းပြချက် 🦉</p>
       </OwlBadge>
 
-      <div className="rounded-lg border border-border bg-background p-3">
-        <p className="whitespace-pre-line text-sm leading-relaxed">{o.scriptMy}</p>
-      </div>
-
       <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
-        <p className="text-xs font-semibold text-primary">📝 မှတ်စု (Cheat sheet)</p>
-        <p className="mt-1 text-sm leading-relaxed">{o.note.ideaMy}</p>
-        <p className="mt-2 font-mono text-xs">{o.note.formula}</p>
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-xs font-semibold text-primary">📝 မှတ်စု အကျဉ်းချုပ် (Short notes)</p>
+          {supported ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              className="h-8 w-8 shrink-0 rounded-full"
+              onClick={() => toggle(spoken)}
+              aria-label={speaking && !paused ? "Pause explanation" : "Play explanation"}
+              title={speaking && !paused ? "ခေတ္တရပ်ရန်" : "အသံဖွင့်ရန်"}
+            >
+              {speaking && !paused ? (
+                <Pause className="h-4 w-4" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+            </Button>
+          ) : null}
+        </div>
+
+        <ul className="mt-2 space-y-1.5 text-sm leading-relaxed">
+          {bullets.map((b, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="text-primary">•</span>
+              <span>{b}</span>
+            </li>
+          ))}
+        </ul>
+
+        <p className="mt-3 font-mono text-xs">{o.note.formula}</p>
+
         <ul className="mt-2 space-y-1">
           {o.note.examples.map((e, i) => (
             <li key={i} className="text-sm">
@@ -172,7 +222,79 @@ function OralMode({ section }: { section: GrammarSection }) {
             </li>
           ))}
         </ul>
+
+        {!supported ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            ဤဘရောက်ဇာတွင် အသံဖတ်ခြင်း (Speech) ကို မထောက်ပံ့ပါ။
+          </p>
+        ) : null}
       </div>
     </div>
   );
 }
+
+/** Turn the cheat-sheet idea + golden rules into short scannable bullets. */
+function summarise(section: GrammarSection): string[] {
+  const fromIdea = section.oral.note.ideaMy
+    .split(/(?<=။)\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const rules = section.text.goldenRulesMy.map((r) => r.trim()).filter(Boolean);
+  return [...fromIdea, ...rules].slice(0, 6);
+}
+
+/** Minimal wrapper around window.speechSynthesis with play / pause / stop. */
+function useNativeSpeech() {
+  const [supported, setSupported] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    setSupported(typeof window !== "undefined" && "speechSynthesis" in window);
+  }, []);
+
+  const stop = useCallback(() => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    setSpeaking(false);
+    setPaused(false);
+  }, []);
+
+  const toggle = useCallback(
+    (text: string) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+      const synth = window.speechSynthesis;
+
+      if (synth.speaking && !synth.paused) {
+        synth.pause();
+        setPaused(true);
+        return;
+      }
+      if (synth.speaking && synth.paused) {
+        synth.resume();
+        setPaused(false);
+        return;
+      }
+
+      synth.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "my-MM";
+      utter.rate = 0.95;
+      utter.onend = () => {
+        setSpeaking(false);
+        setPaused(false);
+      };
+      utter.onerror = () => {
+        setSpeaking(false);
+        setPaused(false);
+      };
+      synth.speak(utter);
+      setSpeaking(true);
+      setPaused(false);
+    },
+    [],
+  );
+
+  return { supported, speaking, paused, toggle, stop };
+}
+

@@ -16,6 +16,8 @@ import {
 } from "@/components/lesson/ExerciseKit";
 import { GrammarScriptView } from "@/components/lesson/GrammarScriptView";
 import { Unit2SkillView } from "@/components/lesson/Unit2SkillView";
+import { Unit3SkillView } from "@/components/lesson/Unit3SkillView";
+
 import { UNIT1_GRAMMAR } from "@/data/grammar/unit1";
 
 import { Button } from "@/components/ui/button";
@@ -29,10 +31,13 @@ import type { PracticeSkill } from "@/lib/practice";
 export function UnitSkillView({ unit, skill }: { unit: number; skill: PracticeSkill }) {
   // Unit 2 has its own fully sandboxed data + view.
   if (unit === 2) return <Unit2SkillView skill={skill} />;
+  // Unit 3 likewise reads only from textbookUnit3.json + unit3Supplement.ts.
+  if (unit === 3) return <Unit3SkillView skill={skill} />;
 
   const supported = unit === 1;
 
   if (!supported) return <UnitPlaceholder unit={unit} skill={skill} />;
+
 
   if (skill === "reading") return <ReadingView />;
   if (skill === "vocabulary") return <VocabularyView />;
