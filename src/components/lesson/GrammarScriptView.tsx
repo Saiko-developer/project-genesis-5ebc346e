@@ -2,9 +2,13 @@
  * Renders the hand-written grammar scripts from `src/data/grammar/*` exactly as
  * authored — no AI-generated prose. Each section offers two views:
  * "Text Explanation" (default) and "Oral Explanation".
+ *
+ * Oral mode speaks the authored `oral.scriptMy` string through the app's own
+ * `/api/tts` pipeline (Gemini `google/gemini-2.5-flash-tts` voice "Kore",
+ * falling back to `openai/gpt-4o-mini-tts` voice "shimmer" on any failure).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BookOpen, Mic, Pause, Play } from "lucide-react";
+import { BookOpen, Loader2, Mic, Pause, Play, Volume2 } from "lucide-react";
 
 import { OwlBadge } from "@/components/lesson/ExerciseKit";
 import { Button } from "@/components/ui/button";
@@ -12,6 +16,8 @@ import { sanitizeForSpeech } from "@/lib/sanitizeSpeech";
 import type { GrammarSection, UnitGrammar } from "@/data/grammar/types";
 
 type Mode = "text" | "oral";
+
+
 
 
 export function GrammarScriptView({ grammar }: { grammar: UnitGrammar }) {
