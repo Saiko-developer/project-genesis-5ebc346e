@@ -32,6 +32,17 @@ export function GrammarScriptView({ grammar }: { grammar: UnitGrammar }) {
 
 function GrammarSectionCard({ section }: { section: GrammarSection }) {
   const [mode, setMode] = useState<Mode>("text");
+  const speech = useCloudSpeech();
+  const { stop } = speech;
+
+  // Stop audio instantly when leaving oral mode or unmounting the card.
+  useEffect(() => {
+    if (mode !== "oral") stop();
+  }, [mode, stop]);
+  useEffect(() => () => stop(), [stop]);
+
+  const busy = speech.status === "loading";
+  const active = speech.status === "playing" || speech.status === "paused";
 
   return (
     <section className="rounded-2xl border border-border bg-card p-5">
@@ -58,15 +69,32 @@ function GrammarSectionCard({ section }: { section: GrammarSection }) {
           className="gap-1.5 rounded-lg"
           onClick={() => setMode("oral")}
           aria-pressed={mode === "oral"}
+          aria-busy={mode === "oral" && busy}
         >
-          <Mic className="h-3.5 w-3.5" /> Oral Explanation
+          {mode === "oral" && busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : mode === "oral" && active ? (
+            <Volume2 className="h-3.5 w-3.5 animate-pulse" />
+          ) : (
+            <Mic className="h-3.5 w-3.5" />
+          )}
+          {mode === "oral" && busy
+            ? "Loading audio…"
+            : mode === "oral" && active
+              ? "Oral Explanation • Playing"
+              : "Oral Explanation"}
         </Button>
       </div>
 
-      {mode === "text" ? <TextMode section={section} /> : <OralMode section={section} />}
+      {mode === "text" ? (
+        <TextMode section={section} />
+      ) : (
+        <OralMode section={section} speech={speech} />
+      )}
     </section>
   );
 }
+
 
 function Block({ title, children }: { title: string; children: React.ReactNode }) {
   return (
