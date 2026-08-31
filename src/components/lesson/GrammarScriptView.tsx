@@ -185,29 +185,35 @@ function TextMode({ section }: { section: GrammarSection }) {
 }
 
 /**
- * Oral mode — the long script is spoken with the browser's native
- * SpeechSynthesis API and NOT shown on screen. Students see a short,
- * scannable bullet summary plus a play/pause control.
+ * Oral mode — the authored `oral.scriptMy` is spoken through `/api/tts`
+ * (Gemini "Kore", OpenAI "shimmer" fallback) and NOT shown on screen.
+ * Students see a short, scannable bullet summary plus a play/pause control.
  */
-function OralMode({ section }: { section: GrammarSection }) {
+function OralMode({
+  section,
+  speech,
+}: {
+  section: GrammarSection;
+  speech: CloudSpeech;
+}) {
   const o = section.oral;
-  const spoken = sanitizeForSpeech(o.scriptMy);
-  const { supported, speaking, paused, toggle, stop } = useNativeSpeech();
+  // `scriptMy` is authored as concatenated string literals — joining happens at
+  // build time, so this is already one clean Unicode string. Only strip markup.
+  const spoken = sanitizeForSpeech(String(o.scriptMy));
+  const { status, error, toggle } = speech;
   const startedRef = useRef(false);
 
-  // Auto-read as soon as the Oral Explanation view opens; stop on unmount or
-  // when the student switches back to Text Explanation.
+  // Auto-read as soon as the Oral Explanation view opens.
   useEffect(() => {
-    if (!supported || startedRef.current) return;
+    if (startedRef.current) return;
     startedRef.current = true;
-    toggle(spoken);
-    return () => stop();
+    void toggle(spoken);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supported]);
-
-  useEffect(() => () => stop(), [stop]);
+  }, []);
 
   const bullets = summarise(section);
+  const loading = status === "loading";
+  const playing = status === "playing";
 
   return (
     <div className="mt-4 space-y-3">
@@ -218,23 +224,27 @@ function OralMode({ section }: { section: GrammarSection }) {
       <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
         <div className="flex items-start justify-between gap-3">
           <p className="text-xs font-semibold text-primary">📝 မှတ်စု အကျဉ်းချုပ် (Short notes)</p>
-          {supported ? (
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              className="h-8 w-8 shrink-0 rounded-full"
-              onClick={() => toggle(spoken)}
-              aria-label={speaking && !paused ? "Pause explanation" : "Play explanation"}
-              title={speaking && !paused ? "ခေတ္တရပ်ရန်" : "အသံဖွင့်ရန်"}
-            >
-              {speaking && !paused ? (
-                <Pause className="h-4 w-4" />
-              ) : (
-                <Play className="h-4 w-4" />
-              )}
-            </Button>
-          ) : null}
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className="h-8 w-8 shrink-0 rounded-full"
+            disabled={loading}
+            onClick={() => void toggle(spoken)}
+            aria-label={playing ? "Pause explanation" : "Play explanation"}
+            aria-busy={loading}
+            title={
+              loading ? "အသံ ပြင်ဆင်နေသည်..." : playing ? "ခေတ္တရပ်ရန်" : "အသံဖွင့်ရန်"
+            }
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : playing ? (
+              <Pause className="h-4 w-4" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )}
+          </Button>
         </div>
 
         <ul className="mt-2 space-y-1.5 text-sm leading-relaxed">
@@ -257,9 +267,9 @@ function OralMode({ section }: { section: GrammarSection }) {
           ))}
         </ul>
 
-        {!supported ? (
-          <p className="mt-3 text-xs text-muted-foreground">
-            ဤဘရောက်ဇာတွင် အသံဖတ်ခြင်း (Speech) ကို မထောက်ပံ့ပါ။
+        {status === "error" ? (
+          <p className="mt-3 text-xs text-destructive">
+            အသံ ဖွင့်၍ မရပါ။ ထပ်မံကြိုးစားကြည့်ပါ။{error ? ` (${error})` : ""}
           </p>
         ) : null}
       </div>
@@ -277,58 +287,167 @@ function summarise(section: GrammarSection): string[] {
   return [...fromIdea, ...rules].slice(0, 6);
 }
 
-/** Minimal wrapper around window.speechSynthesis with play / pause / stop. */
-function useNativeSpeech() {
-  const [supported, setSupported] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
-  const [paused, setPaused] = useState(false);
+/** Split a long Burmese script into TTS-sized chunks at sentence boundaries. */
+function chunkScript(text: string, maxChars = 900): string[] {
+  const sentences = text.split(/(?<=[။\.\!\?])\s*/).filter((s) => s.trim());
+  const chunks: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    if (sentence.length > maxChars) {
+      if (current.trim()) chunks.push(current.trim());
+      current = "";
+      for (let i = 0; i < sentence.length; i += maxChars) {
+        chunks.push(sentence.slice(i, i + maxChars).trim());
+      }
+      continue;
+    }
+    if (current.length + sentence.length > maxChars) {
+      chunks.push(current.trim());
+      current = "";
+    }
+    current += sentence;
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.length ? chunks : [text];
+}
 
-  useEffect(() => {
-    setSupported(typeof window !== "undefined" && "speechSynthesis" in window);
+type SpeechStatus = "idle" | "loading" | "playing" | "paused" | "error";
+
+type CloudSpeech = {
+  status: SpeechStatus;
+  error: string | null;
+  toggle: (text: string) => Promise<void>;
+  stop: () => void;
+};
+
+/**
+ * Cloud TTS playback for the grammar oral scripts.
+ *
+ * Every chunk is POSTed to `/api/tts`, which uses
+ * `google/gemini-2.5-flash-tts` (voice "Kore") and instantly falls back to
+ * `openai/gpt-4o-mini-tts` (voice "shimmer") if Gemini errors out. The body is
+ * JSON-encoded, so Burmese Unicode is transmitted intact.
+ */
+function useCloudSpeech(): CloudSpeech {
+  const [status, setStatus] = useState<SpeechStatus>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const urlsRef = useRef<string[]>([]);
+  const runIdRef = useRef(0);
+
+  const cleanup = useCallback(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      try {
+        audio.pause();
+      } catch {
+        // ignore
+      }
+      audio.onended = null;
+      audio.onerror = null;
+      audio.src = "";
+      audioRef.current = null;
+    }
+    for (const url of urlsRef.current) URL.revokeObjectURL(url);
+    urlsRef.current = [];
   }, []);
 
   const stop = useCallback(() => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    setSpeaking(false);
-    setPaused(false);
+    runIdRef.current += 1;
+    cleanup();
+    setStatus("idle");
+    setError(null);
+  }, [cleanup]);
+
+  useEffect(() => () => stop(), [stop]);
+
+  const fetchChunk = useCallback(async (text: string): Promise<Blob> => {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      // "sarah" maps to Gemini "Kore" server-side and to OpenAI "shimmer"
+      // in the fallback path.
+      body: JSON.stringify({ text, voice: "sarah", speed: 1.0 }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`TTS ${res.status}${detail ? `: ${detail.slice(0, 120)}` : ""}`);
+    }
+    return res.blob();
+  }, []);
+
+  const playBlob = useCallback((blob: Blob, myId: number) => {
+    return new Promise<void>((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      urlsRef.current.push(url);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => resolve();
+      audio.onerror = () => reject(new Error("audio playback failed"));
+      audio.play().then(
+        () => {
+          if (myId === runIdRef.current) setStatus("playing");
+        },
+        (err) => reject(err instanceof Error ? err : new Error("autoplay blocked")),
+      );
+    });
   }, []);
 
   const toggle = useCallback(
-    (text: string) => {
-      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-      const synth = window.speechSynthesis;
+    async (text: string) => {
+      if (typeof window === "undefined") return;
+      const audio = audioRef.current;
 
-      if (synth.speaking && !synth.paused) {
-        synth.pause();
-        setPaused(true);
+      if (audio && !audio.paused) {
+        audio.pause();
+        setStatus("paused");
         return;
       }
-      if (synth.speaking && synth.paused) {
-        synth.resume();
-        setPaused(false);
+      if (audio && audio.paused && status === "paused") {
+        try {
+          await audio.play();
+          setStatus("playing");
+        } catch {
+          setStatus("error");
+        }
         return;
       }
 
-      synth.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.lang = "my-MM";
-      utter.rate = 0.95;
-      utter.onend = () => {
-        setSpeaking(false);
-        setPaused(false);
-      };
-      utter.onerror = () => {
-        setSpeaking(false);
-        setPaused(false);
-      };
-      synth.speak(utter);
-      setSpeaking(true);
-      setPaused(false);
+      const clean = text.trim();
+      if (!clean) return;
+
+      runIdRef.current += 1;
+      const myId = runIdRef.current;
+      cleanup();
+      setError(null);
+      setStatus("loading");
+
+      try {
+        const chunks = chunkScript(clean);
+        // Fetch the first chunk, then prefetch the next while the current plays.
+        let pending: Promise<Blob> | null = fetchChunk(chunks[0]);
+        for (let i = 0; i < chunks.length; i++) {
+          const blob = await pending!;
+          if (myId !== runIdRef.current) return;
+          pending = i + 1 < chunks.length ? fetchChunk(chunks[i + 1]) : null;
+          await playBlob(blob, myId);
+          if (myId !== runIdRef.current) return;
+        }
+        if (myId !== runIdRef.current) return;
+        cleanup();
+        setStatus("idle");
+      } catch (err) {
+        if (myId !== runIdRef.current) return;
+        console.error("[grammar-oral-tts] failed", err);
+        cleanup();
+        setError(err instanceof Error ? err.message : String(err));
+        setStatus("error");
+      }
     },
-    [],
+    [cleanup, fetchChunk, playBlob, status],
   );
 
-  return { supported, speaking, paused, toggle, stop };
+  return { status, error, toggle, stop };
 }
+
 
